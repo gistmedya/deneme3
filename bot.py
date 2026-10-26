@@ -16,35 +16,25 @@ RTMP_URL = "rtmp://ssh101.bozztv.com:1935/ssh101"
 STREAM_KEY = os.getenv("STREAM_KEY") or "digimax2"
 RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
-M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/deneme.m3u"
-LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1787745128505.png"
+M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/gistmedya/0101/refs/heads/main/deneme.m3u"
+LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/gistmedya/0101/refs/heads/main/1791047356035.png"
 
-STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "yesilcam.json")
+STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "digi.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 STREAM_REFERER = "https://vidmody.com/"
 
-# Logo ve yazı opaklık ayarları (0.0 - 1.0 arası)
 LOGO_OPACITY = float(os.getenv("LOGO_OPACITY", "1.0"))
 TEXT_OPACITY = float(os.getenv("TEXT_OPACITY", "1.0"))
 BOLD_FONT_PATH = os.getenv("BOLD_FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 
-# Decoder'ı tek thread'e zorlamak için
-DECODER_THREADS = os.getenv("DECODER_THREADS", "1")
-
-# Watchdog Zaman Aşımları (Saniye)
-WATCHDOG_STARTUP_SECONDS = int(os.getenv("WATCHDOG_STARTUP_SECONDS", "60"))  # İlk açılış toleransı
-WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WATCHDOG_TIMEOUT_SECONDS", "45"))  # Yayın ortası donma toleransı
-
-# Tolerans ve Geri Sarma Ayarları
-END_TOLERANCE_SECONDS = 15  # Bitişe bu kadar saniye kaldıysa film gerçekten bitmiş sayılır
-SEEK_BACKOFF_SECONDS = 10   # Sürekli çöken noktada kaç saniye geriye sarılacak
+DECODER_THREADS = os.getenv("DECODER_THREADS", "2")
+WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WATCHDOG_TIMEOUT_SECONDS", "45"))
 LINK_CHANGE_REWIND_SECONDS = int(os.getenv("LINK_CHANGE_REWIND_SECONDS", "15"))
 
 
 def format_hms(total_seconds):
-    """Saniyeyi SS:DD:SS formatına çevirir."""
     total_seconds = max(0, int(total_seconds))
     hrs = total_seconds // 3600
     mins = (total_seconds % 3600) // 60
@@ -52,142 +42,78 @@ def format_hms(total_seconds):
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
 
-# ===================== KALICI RTMP YAYINCISI =====================
-class RtmpPublisher:
-    """
-    RTMP sunucusuna SÜREKLİ bağlı kalan tek bir FFmpeg süreci.
-    Filmleri kodlayan FFmpeg süreçleri çıktılarını (MPEG-TS) bu sürecin stdin'ine yazar.
-    """
+def get_highest_quality_hls_link(url):
+    if not url.endswith('.m3u8') and '.m3u8?' not in url:
+        return url
 
-    def __init__(self):
-        self.proc = None
-        self.started_at = 0.0
-        self.tail = deque(maxlen=30)
+    try:
+        headers = {'User-Agent': STREAM_USER_AGENT, 'Referer': STREAM_REFERER}
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200 and '#EXTM3U' in res.text:
+            lines = res.text.splitlines()
+            best_url = None
+            max_bandwidth = 0
+            base_url = url.rsplit('/', 1)[0] + '/'
 
-    def alive(self):
-        return self.proc is not None and self.proc.poll() is None
+            for i, line in enumerate(lines):
+                if line.startswith('#EXT-X-STREAM-INF'):
+                    bw_match = re.search(r'BANDWIDTH=(\d+)', line)
+                    bw = int(bw_match.group(1)) if bw_match else 0
 
-    def ensure_running(self):
-        if self.alive():
-            return
-        self.stop()
-        cmd = [
-            'ffmpeg', '-hide_banner', '-loglevel', 'warning',
-            '-fflags', '+genpts',
-            '-analyzeduration', '3000000',
-            '-probesize', '3000000',
-            '-f', 'mpegts', '-i', 'pipe:0',
-            '-c', 'copy',
-            '-bsf:a', 'aac_adtstoasc',
-            '-flvflags', 'no_duration_filesize',
-            '-f', 'flv',
-            RTMP_SERVER
-        ]
-        print(f"📡 Kalıcı RTMP yayıncısı başlatılıyor => {RTMP_SERVER}")
-        self.proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            bufsize=0
-        )
-        self.started_at = time.time()
-        threading.Thread(target=self._drain, args=(self.proc,), daemon=True).start()
+                    if i + 1 < len(lines):
+                        sub_url = lines[i + 1].strip()
+                        if not sub_url.startswith('http'):
+                            sub_url = base_url + sub_url
 
-    def _drain(self, proc):
-        try:
-            for raw in iter(proc.stderr.readline, b''):
-                self.tail.append(raw.decode('utf-8', 'replace').rstrip())
-        except Exception:
-            pass
+                        if bw > max_bandwidth:
+                            max_bandwidth = bw
+                            best_url = sub_url
 
-    def clock(self):
-        return time.time() - self.started_at
+            if best_url:
+                return best_url
+    except Exception as e:
+        print(f"⚠️ HLS Kalite ayrıştırma hatası: {e}")
 
-    def stop(self):
-        if self.proc is None:
-            return
-        try:
-            self.proc.stdin.close()
-        except Exception:
-            pass
-        try:
-            if self.proc.poll() is None:
-                self.proc.kill()
-            self.proc.wait(timeout=5)
-        except Exception:
-            pass
-        self.proc = None
-
-
-publisher = RtmpPublisher()
-_duration_cache = {}
-
-
-def probe_url_of(stream_url):
-    return stream_url.split(";")[0].strip() if ";" in stream_url else stream_url
-
-
-def prefetch_duration(stream_url):
-    url = probe_url_of(stream_url)
-    duration = get_video_duration_ffprobe(url)
-    if duration > 0:
-        _duration_cache[url] = duration
+    return url
 
 
 def get_video_duration_ffprobe(video_url):
-    """FFprobe ile videonun GERÇEK toplam süresini çeker."""
     cmd = [
         'ffprobe',
         '-v', 'error',
+        '-allowed_extensions', 'ALL',
+        '-analyzeduration', '10000000',
+        '-probesize', '10000000',
+        '-select_streams', 'v:0',
         '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1',
         '-headers', f"User-Agent: {STREAM_USER_AGENT}\r\nReferer: {STREAM_REFERER}\r\n",
         video_url
     ]
     try:
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=12).decode('utf-8', 'replace').strip()
-        duration = float(output.splitlines()[-1].strip())
+        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=8).decode('utf-8').strip()
+        duration = float(output)
         if duration > 0:
-            print(f"⏱️ ffprobe ile toplam süre tespit edildi: {duration:.1f} saniye ({format_hms(duration)})")
             return duration
     except Exception as e:
         print(f"⚠️ ffprobe ile süre okunamadı: {e}")
     return 0.0
 
 
-def is_really_finished(current_sec, total_sec):
-    """
-    Sadece FFmpeg'in 0 vermesine güvenmez.
-    İzlenen sürenin toplam süreye ulaşıp ulaşmadığını kontrol eder (Sahte Bitiş Koruması).
-    """
-    if total_sec <= 0:
-        return True  # Toplam süre bilinmiyorsa FFmpeg'in 0 çıkışına güvenmek zorundayız.
-    return (total_sec - current_sec) <= END_TOLERANCE_SECONDS
-
-
 def get_local_state():
-    """Yerel state dosyasından son durumu okur."""
     if os.path.exists(STATE_FILE_NAME):
         if os.path.getsize(STATE_FILE_NAME) == 0:
             return 0, 0, "", ""
         try:
             with open(STATE_FILE_NAME, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return (
-                    data.get("last_index", 0),
-                    data.get("last_seconds", 0),
-                    data.get("last_url", ""),
-                    data.get("last_title", "")
-                )
+                return data.get("last_index", 0), data.get("last_seconds", 0), data.get("last_url", ""), data.get("last_title", "")
         except Exception as e:
             print(f"⚠️ Yerel state okuma hatası: {e}")
     return 0, 0, "", ""
 
 
 def update_local_state(index, seconds, url="", title=""):
-    """Atomik yazım mantığıyla son konumu kaydeder."""
-    tmp_file = f"{STATE_FILE_NAME}.tmp"
     try:
         data = {
             "last_index": int(index),
@@ -195,10 +121,8 @@ def update_local_state(index, seconds, url="", title=""):
             "last_url": url,
             "last_title": title,
         }
-        with open(tmp_file, "w", encoding="utf-8") as f:
+        with open(STATE_FILE_NAME, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_file, STATE_FILE_NAME)
-        print(f"💾 Konum kaydedildi => İndeks: {index}, Saniye: {int(seconds)}")
     except Exception as e:
         print(f"⚠️ Yerel state yazma hatası: {e}")
 
@@ -206,7 +130,7 @@ def update_local_state(index, seconds, url="", title=""):
 def get_m3u_playlist(m3u_url):
     try:
         headers = {'User-Agent': STREAM_USER_AGENT, 'Referer': STREAM_REFERER}
-        response = requests.get(m3u_url, headers=headers, timeout=15)
+        response = requests.get(m3u_url, headers=headers, timeout=10)
         if response.status_code == 200:
             lines = response.text.splitlines()
             playlist = []
@@ -231,7 +155,7 @@ def get_m3u_playlist(m3u_url):
 def download_logo():
     headers = {'User-Agent': STREAM_USER_AGENT}
     try:
-        response = requests.get(LOGO_URL, headers=headers, timeout=15)
+        response = requests.get(LOGO_URL, headers=headers, timeout=10)
         if response.status_code == 200 and len(response.content) > 0:
             with open('logo.png', 'wb') as f:
                 f.write(response.content)
@@ -246,6 +170,15 @@ def write_title_file(title):
             f.write(title)
     except Exception as e:
         print(f"⚠️ Başlık dosyası yazma hatası: {e}")
+
+
+def write_remaining_time_file(remaining_seconds):
+    try:
+        formatted = format_hms(remaining_seconds)
+        with open('time.txt', 'w', encoding='utf-8') as f:
+            f.write(formatted)
+    except Exception as e:
+        print(f"⚠️ Kalan süre dosyası yazma hatası: {e}")
 
 
 def print_dashboard(title, index, playlist_len, seconds, status="🟢 Yayında"):
@@ -278,22 +211,17 @@ def write_step_summary(title, index, playlist_len, seconds, status="🟢 Yayınd
 
 
 def start_m3u_stream():
-    print(f"🔧 Kullanılan M3U   : {M3U_URL}")
-    print(f"🔧 Kullanılan Logo  : {LOGO_URL}")
-    print(f"🔧 State dosyası    : {STATE_FILE_NAME}")
-    print(f"🔧 RTMP hedefi      : {RTMP_SERVER}")
-
     download_logo()
+
     current_index, last_seconds, last_url, last_title = get_local_state()
 
     consecutive_fast_failures = 0
     FAST_FAIL_THRESHOLD_SECONDS = 20
-    MAX_RETRY_DELAY_SECONDS = 120
 
     while True:
         playlist = get_m3u_playlist(M3U_URL)
         if not playlist:
-            time.sleep(10)
+            time.sleep(2)
             continue
 
         if current_index >= len(playlist):
@@ -306,129 +234,156 @@ def start_m3u_stream():
         target_stream_url = current_item["url"]
         film_title = current_item["title"]
 
-        # Link Değişikliği / Süre Rewind Kontrolü
         if last_seconds > 0 and last_url and target_stream_url != last_url:
             if last_title and film_title == last_title:
-                old_seconds = last_seconds
                 last_seconds = max(0, last_seconds - LINK_CHANGE_REWIND_SECONDS)
-                print(f"🔄 İçerik linki yenilenmiş. {old_seconds}s yerine {last_seconds}s'den başlanacak.")
             else:
                 last_seconds = 0
 
         last_url = target_stream_url
         last_title = film_title
+
         write_title_file(film_title)
 
-        probe_url = probe_url_of(target_stream_url)
-        total_duration_sec = _duration_cache.pop(probe_url, 0.0)
-        if total_duration_sec <= 0:
-            total_duration_sec = get_video_duration_ffprobe(probe_url)
+        # En yüksek kalite HLS adresi
+        real_stream_url = get_highest_quality_hls_link(target_stream_url)
+
+        probe_url = real_stream_url.split(";")[0].strip() if ";" in real_stream_url else real_stream_url
+        total_duration_sec = get_video_duration_ffprobe(probe_url)
+
+        initial_remaining = max(0, total_duration_sec - last_seconds) if total_duration_sec > 0 else 0
+        write_remaining_time_file(initial_remaining)
 
         print("=" * 60)
-        print("📺 Maxanimasyon Canlı Aktarım Yayını Başlatılıyor")
-        print(f"🎬 Oynatılan İçerik  : {film_title}")
-        print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
-        print(f"⏱️ Toplam Süre      : {format_hms(total_duration_sec) if total_duration_sec > 0 else 'Bilinmiyor'}")
+        print(f"📺 Oynatılan Film: {film_title}")
+        print("⚡ Yıldırım Hızında Bağlantı Kuruluyor...")
 
-        headers_arg = f"User-Agent: {STREAM_USER_AGENT}\r\nReferer: https://vidmody.com/\r\nOrigin: https://vidmody.com\r\n"
+        headers_arg = (
+            f"User-Agent: {STREAM_USER_AGENT}\r\n"
+            f"Referer: https://vidmody.com/\r\n"
+            f"Origin: https://vidmody.com\r\n"
+        )
 
+        # Hızlı başlatma ve minimal gecikme parametreleri eklendi
         input_options = [
             '-re',
             '-headers', headers_arg,
             '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
             '-err_detect', 'ignore_err',
-            '-fflags', '+genpts+discardcorrupt',
+            '-fflags', '+genpts+discardcorrupt+fastseek+nobuffer',
+            '-allowed_extensions', 'ALL',
             '-thread_queue_size', '1024',
             '-max_interleave_delta', '0',
-            '-analyzeduration', '10000000',
-            '-probesize', '10000000',
+            '-analyzeduration', '5000000',
+            '-probesize', '5000000',
             '-reconnect', '1',
             '-reconnect_at_eof', '1',
             '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '10',
-            '-rw_timeout', '10000000',
+            '-reconnect_delay_max', '2',
+            '-rw_timeout', '5000000',
             '-threads', DECODER_THREADS,
         ]
 
         seek_args = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
-        if ";" in target_stream_url:
-            v_url, a_url = target_stream_url.split(";", 1)
-            input_args = input_options + seek_args + ['-i', v_url.strip()] + input_options + seek_args + ['-i', a_url.strip()]
-            audio_map = ['-map', '1:a:0?']
+        if ";" in real_stream_url:
+            video_url, audio_url = real_stream_url.split(";", 1)
+            video_url = video_url.strip()
+            audio_url = audio_url.strip()
+
+            input_args = (
+                input_options + seek_args + ['-i', video_url] +
+                input_options + seek_args + ['-i', audio_url]
+            )
             logo1_input_index = 2
         else:
-            input_args = input_options + seek_args + ['-i', target_stream_url]
-            audio_map = ['-map', '0:a:0?']
+            input_args = input_options + seek_args + ['-i', real_stream_url]
             logo1_input_index = 1
 
         print_dashboard(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
+        write_step_summary(film_title, current_index, len(playlist), last_seconds, status="🟡 Başlatılıyor")
 
         has_logo1 = os.path.exists('logo.png') and os.path.getsize('logo.png') > 0
-        title_drawtext = f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':fontcolor=white@{TEXT_OPACITY}:fontsize=19:x=w-tw-20:y=h-th-20"
+
+        title_drawtext = (
+            f"drawtext=textfile='title.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
+            f"fontcolor=white@{TEXT_OPACITY}:fontsize=19:"
+            f"x=w-tw-20:y=h-th-20"
+        )
+
+        time_drawtext = (
+            f"drawtext=textfile='time.txt':reload=1:fontfile='{BOLD_FONT_PATH}':"
+            f"fontcolor=white@{TEXT_OPACITY}:fontsize=18:"
+            f"x=20:y=h-th-20"
+        )
 
         if has_logo1:
             logo_inputs = ['-i', 'logo.png']
             filter_str = (
-                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
-                f'[{logo1_input_index}:v]scale=-2:85,format=rgba,colorchannelmixer=aa={LOGO_OPACITY}[logo1];'
+                '[0:v]scale=1920:1080:flags=bicubic,setdar=16/9,fps=25[main];'
+                f'[{logo1_input_index}:v]scale=-2:85,format=rgba,'
+                f'colorchannelmixer=aa={LOGO_OPACITY}[logo1];'
                 '[main][logo1]overlay=50:50[tmp1];'
-                f'[tmp1]{title_drawtext}[v]'
+                f'[tmp1]{title_drawtext}[tmp2];'
+                f'[tmp2]{time_drawtext}[v]'
             )
         else:
             logo_inputs = []
             filter_str = (
-                '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black,fps=25[main];'
-                f'[main]{title_drawtext}[v]'
+                '[0:v]scale=1920:1080:flags=bicubic,setdar=16/9,fps=25[main];'
+                f'[main]{title_drawtext}[tmp2];'
+                f'[tmp2]{time_drawtext}[v]'
             )
 
-        publisher.ensure_running()
-        ts_offset = publisher.clock() + 1.0
-
-        command = ['ffmpeg'] + input_args + logo_inputs + [
+        command = [
+            'ffmpeg'
+        ] + input_args + logo_inputs + [
             '-filter_complex', filter_str,
-            '-map', '[v]'
-        ] + audio_map + [
-            '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
-            '-r', '25', '-b:v', '2500k', '-maxrate', '2500k', '-bufsize', '3000k',
-            '-g', '50', '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-ar', '44100',
-            '-output_ts_offset', f'{ts_offset:.3f}', '-flush_packets', '1',
-            '-f', 'mpegts', 'pipe:1'
+            '-map', '[v]',
+            '-map', '1:a:0?' if ";" in real_stream_url else '0:a:0?',
+            '-c:v', 'libx264',
+            '-preset', 'ultrafast',       # En hızlı geçiş ve sıfır yükleme süresi için
+            '-tune', 'zerolatency',       # Anlık aktarım için gecikmeyi sıfırlama
+            '-pix_fmt', 'yuv420p',
+            '-r', '25',
+            '-b:v', '2500k',
+            '-maxrate', '2500k',
+            '-bufsize', '2500k',
+            '-g', '50',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-ac', '2',
+            '-ar', '44100',
+            '-flvflags', 'no_duration_filesize', # RTMP paketlerini bekletmeden anında yolla
+            '-f', 'flv',
+            RTMP_SERVER
         ]
 
         process = subprocess.Popen(
             command,
-            stdout=publisher.proc.stdin,
             stderr=subprocess.PIPE,
             universal_newlines=True
         )
-
-        if len(playlist) > 0:
-            next_item = playlist[(current_index + 1) % len(playlist)]
-            threading.Thread(target=prefetch_duration, args=(next_item["url"],), daemon=True).start()
 
         last_save_time = time.time()
         last_dashboard_time = time.time()
         current_stream_seconds = last_seconds
         stderr_tail = deque(maxlen=40)
-
-        # WATCHDOG Mantığı (Başlangıç ve Normal Yayın Toleranslı)
         last_progress_time = [time.time()]
-        has_started_progress = [False]
 
-        def _watchdog(proc=process, progress_ref=last_progress_time, started_ref=has_started_progress):
+        def _watchdog(proc=process, progress_ref=last_progress_time):
             while proc.poll() is None:
-                time.sleep(5)
-                timeout = WATCHDOG_TIMEOUT_SECONDS if started_ref[0] else WATCHDOG_STARTUP_SECONDS
-                if time.time() - progress_ref[0] > timeout:
-                    print(f"🚨 Watchdog: {timeout} saniyedir veri akışı yok! Süreç kilitlendi, sonlandırılıyor.")
+                time.sleep(3)
+                if time.time() - progress_ref[0] > WATCHDOG_TIMEOUT_SECONDS:
+                    print(f"🚨 Watchdog: İlerleme durdu. Hızlıca yeniden başlatılıyor.")
                     try:
                         proc.kill()
                     except Exception:
                         pass
                     break
 
-        threading.Thread(target=_watchdog, daemon=True).start()
+        watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
+        watchdog_thread.start()
 
         while True:
             line = process.stderr.readline()
@@ -445,9 +400,14 @@ def start_m3u_stream():
                     played_seconds = int(hrs) * 3600 + int(mins) * 60 + float(secs)
                     current_stream_seconds = last_seconds + played_seconds
 
+                    if total_duration_sec > 0:
+                        remaining_seconds = max(0, total_duration_sec - current_stream_seconds)
+                        write_remaining_time_file(remaining_seconds)
+                    else:
+                        write_remaining_time_file(current_stream_seconds)
+
                     now = time.time()
                     last_progress_time[0] = now
-                    has_started_progress[0] = True
 
                     if now - last_save_time > 30:
                         update_local_state(current_index, current_stream_seconds, target_stream_url, film_title)
@@ -458,63 +418,38 @@ def start_m3u_stream():
                         write_step_summary(film_title, current_index, len(playlist), current_stream_seconds)
                         last_dashboard_time = now
 
-        # ===================== GELİŞMİŞ BİTİŞ VE KOPMA KONTROLÜ =====================
-        finished_naturally = (process.returncode == 0) and is_really_finished(current_stream_seconds, total_duration_sec)
-
-        if finished_naturally:
-            print("✅ İçerik gerçekten bitti, sonraki videoya geçiliyor.")
-            write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="✅ Bitti, sıradakine geçiliyor")
+        if process.returncode == 0:
+            print("⚡ Film bitti, anında sonraki filme geçiliyor...")
             current_index += 1
             last_seconds = 0
             last_url = ""
             last_title = ""
             update_local_state(current_index, 0, "", "")
             consecutive_fast_failures = 0
+            # Bekleme süresi 0 yapıldı, sıradaki filme anında bağlanacak
+            time.sleep(0.1)
         else:
-            # Erken kapanma veya kopma durumu
-            if process.returncode == 0:
-                print(f"⚠️ FFmpeg 0 kodu verdi ancak film tamamlanmadı ({format_hms(current_stream_seconds)} / {format_hms(total_duration_sec)}). Erken kopma sayıldı!")
-            elif process.returncode == -9:
-                print("⚠️ FFmpeg watchdog (donma) nedeniyle sonlandırıldı.")
-
-            write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="🔴 Bağlantı koptu, tekrar denenecek")
-
+            print(f"⚠️ Yayın koptu (Return Code: {process.returncode}). Yeniden deneniyor...")
             duration_this_attempt = current_stream_seconds - last_seconds
             if duration_this_attempt < FAST_FAIL_THRESHOLD_SECONDS:
                 consecutive_fast_failures += 1
             else:
                 consecutive_fast_failures = 0
 
-            # 3 Kez üst üste hızlı çökme yaşanırsa sonraki videoya geç
             if consecutive_fast_failures >= 3:
-                print(f"❌ {film_title} akışı sürekli hataya düştü. Sonraki içeriğe atlanıyor...")
                 current_index += 1
                 last_seconds = 0
                 last_url = ""
                 last_title = ""
                 consecutive_fast_failures = 0
                 update_local_state(current_index, 0, "", "")
+                time.sleep(0.5)
             else:
-                # SEEK BACKOFF: Eğer sürekli aynı noktada çöküyorsa bozuk kareyi (corrupt frame) atlamak için biraz geri sar
-                if consecutive_fast_failures > 1 and current_stream_seconds > SEEK_BACKOFF_SECONDS:
-                    last_seconds = max(0, current_stream_seconds - SEEK_BACKOFF_SECONDS)
-                    print(f"⏪ Takılma koruması: {SEEK_BACKOFF_SECONDS} saniye geriye sarılarak ({last_seconds}s) tekrar denenecek.")
-                else:
-                    last_seconds = current_stream_seconds
-
+                last_seconds = current_stream_seconds
                 last_url = target_stream_url
                 update_local_state(current_index, last_seconds, last_url, film_title)
-
-        retry_delay = 0 if finished_naturally else (min(5 * (2 ** consecutive_fast_failures), MAX_RETRY_DELAY_SECONDS) if consecutive_fast_failures > 0 else 5)
-        if retry_delay > 0:
-            print(f"⚠️ {retry_delay} saniye sonra tekrar bağlanılıyor...")
-            time.sleep(retry_delay)
+                time.sleep(0.5)
 
 
 if __name__ == "__main__":
-    try:
-        start_m3u_stream()
-    except KeyboardInterrupt:
-        print("\n🛑 Durduruluyor...")
-    finally:
-        publisher.stop()
+    start_m3u_stream()
