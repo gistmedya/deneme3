@@ -10,6 +10,7 @@ import json
 import requests
 import threading
 from collections import deque
+from urllib.parse import urlparse
 
 # ===================== AYARLAR =====================
 RTMP_URL = "rtmp://ssh101.bozztv.com:1935/ssh101"
@@ -23,7 +24,6 @@ STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "yesilcam.json")
 GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-STREAM_REFERER = "https://vidmody.com/"
 
 # Logo ve yazı opaklık ayarları (0.0 - 1.0 arası)
 LOGO_OPACITY = float(os.getenv("LOGO_OPACITY", "1.0"))
@@ -94,7 +94,7 @@ def get_m3u_playlist(m3u_url):
     try:
         headers = {
             'User-Agent': STREAM_USER_AGENT,
-            'Referer': STREAM_REFERER
+            'Referer': 'https://vidmody.com/'
         }
         response = requests.get(m3u_url, headers=headers, timeout=15)
         if response.status_code == 200:
@@ -201,8 +201,6 @@ def start_m3u_stream():
 
         if last_seconds > 0 and last_url and target_stream_url != last_url:
             if last_title and film_title == last_title:
-                # Aynı film, sadece kaynak linki değişmiş (mirror/CDN yenilemesi).
-                # Senkron güvenliği için birkaç saniye geriden devam edilir.
                 old_seconds = last_seconds
                 last_seconds = max(0, last_seconds - LINK_CHANGE_REWIND_SECONDS)
                 print(f"🔄 Bu sıradaki ({current_index + 1}) içeriğin linki değişmiş, "
@@ -211,7 +209,6 @@ def start_m3u_stream():
                 print(f"   Eski link: {last_url}")
                 print(f"   Yeni link: {target_stream_url}")
             else:
-                # Başlık da değişmiş -> playlist'teki içerik gerçekten değiştirilmiş.
                 print(f"🆕 Bu sıradaki ({current_index + 1}) içerik gerçekten değişmiş "
                       f"('{last_title}' -> '{film_title}'), video baştan başlatılacak.")
                 last_seconds = 0
@@ -227,15 +224,21 @@ def start_m3u_stream():
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
+        # --- DİNAMİK REFERER VE ORİGİN ÇÖZÜMÜ ---
+        primary_url = target_stream_url.split(";")[0].strip() if ";" in target_stream_url else target_stream_url
+        parsed_url = urlparse(primary_url)
+        dynamic_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
         headers_arg = (
             f"User-Agent: {STREAM_USER_AGENT}\r\n"
-            f"Referer: https://vidmody.com/\r\n"
-            f"Origin: https://vidmody.com\r\n"
+            f"Referer: {dynamic_domain}/\r\n"
+            f"Origin: {dynamic_domain}\r\n"
         )
+        # ----------------------------------------
 
         # Gerçek zamanlı okuma (-re) ve kararlı ağ bağlantısı parametreleri
         input_options = [
-            '-re',  # GERÇEK ZAMANLI OKUMA (Yayının takılmasını ve donmasını engeller)
+            '-re',  
             '-headers', headers_arg,
             '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
             '-err_detect', 'ignore_err',
@@ -252,7 +255,6 @@ def start_m3u_stream():
             '-threads', DECODER_THREADS,
         ]
 
-        # Sadece süre 0'dan büyükse -ss (atlama) parametresi eklenir
         seek_args = ['-ss', str(last_seconds)] if last_seconds > 0 else []
 
         if ";" in target_stream_url:
@@ -341,7 +343,6 @@ def start_m3u_stream():
         current_stream_seconds = last_seconds
         stderr_tail = deque(maxlen=40)
 
-        # Watchdog: ilerleme (time=) gelmemesi durumunda süreci öldürür.
         last_progress_time = [time.time()]
 
         def _watchdog(proc=process, progress_ref=last_progress_time):
@@ -413,7 +414,6 @@ def start_m3u_stream():
             else:
                 consecutive_fast_failures = 0
 
-            # 3 kere üst üste hızlı çökme yaşanırsa videoyu atla (sonsuz döngüyü önleme)
             if consecutive_fast_failures >= 3:
                 print(f"❌ {film_title} akışı sürekli dekoder hatası verdi. Sonraki içeriğe geçiliyor...")
                 current_index += 1
