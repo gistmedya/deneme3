@@ -25,7 +25,7 @@ GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# Logo ve yazı opaklık ayarları (0.0 - 1.0 arası)
+# Logo e yazı opaklık ayarları (0.0 - 1.0 arası)
 LOGO_OPACITY = float(os.getenv("LOGO_OPACITY", "1.0"))
 TEXT_OPACITY = float(os.getenv("TEXT_OPACITY", "1.0"))
 BOLD_FONT_PATH = os.getenv("BOLD_FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
@@ -224,16 +224,33 @@ def start_m3u_stream():
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
-        # --- DİNAMİK REFERER VE ORİGİN ÇÖZÜMÜ ---
+        # --- ÇEREZ VE OTURUM YAKALAMA ÇÖZÜMÜ ---
         primary_url = target_stream_url.split(";")[0].strip() if ";" in target_stream_url else target_stream_url
         parsed_url = urlparse(primary_url)
         dynamic_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+        cookie_str = ""
+        try:
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': STREAM_USER_AGENT,
+                'Referer': f"{dynamic_domain}/"
+            })
+            resp = session.get(primary_url, timeout=10, allow_redirects=True)
+            cookies_dict = session.cookies.get_dict()
+            if cookies_dict:
+                cookie_str = "; ".join([f"{k}={v}" for k, v in cookies_dict.items()])
+                print(f"🍪 Oturum çerezleri yakalandı: {cookie_str}")
+        except Exception as e:
+            print(f"⚠️ Çerez yakalama uyarısı: {e}")
 
         headers_arg = (
             f"User-Agent: {STREAM_USER_AGENT}\r\n"
             f"Referer: {dynamic_domain}/\r\n"
             f"Origin: {dynamic_domain}\r\n"
         )
+        if cookie_str:
+            headers_arg += f"Cookie: {cookie_str}\r\n"
         # ----------------------------------------
 
         # Gerçek zamanlı okuma (-re) ve kararlı ağ bağlantısı parametreleri
