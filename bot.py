@@ -25,24 +25,22 @@ GITHUB_STEP_SUMMARY = os.getenv("GITHUB_STEP_SUMMARY")
 
 STREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# Logo e yazı opaklık ayarları (0.0 - 1.0 arası)
+# Logo ve yazı opaklık ayarları (0.0 - 1.0 arası)
 LOGO_OPACITY = float(os.getenv("LOGO_OPACITY", "1.0"))
 TEXT_OPACITY = float(os.getenv("TEXT_OPACITY", "1.0"))
 BOLD_FONT_PATH = os.getenv("BOLD_FONT_PATH", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 
-# Decoder'ı tek thread'e zorlamak için (bkz: "Assertion pkt failed at ffmpeg_dec.c" hatası)
+# Decoder'ı tek thread'e zorlamak için
 DECODER_THREADS = os.getenv("DECODER_THREADS", "1")
 
 # Watchdog: bu kadar saniye boyunca FFmpeg'den ilerleme (time=) gelmezse süreç donmuş kabul edilir.
 WATCHDOG_TIMEOUT_SECONDS = int(os.getenv("WATCHDOG_TIMEOUT_SECONDS", "45"))
 
-# Link değişip de aynı film olduğu tespit edildiğinde, senkron güvenliği için
-# kaldığı saniyeden kaç saniye geriden devam edileceği.
+# Link değişip de aynı film olduğu tespit edildiğinde geriden devam süresi
 LINK_CHANGE_REWIND_SECONDS = int(os.getenv("LINK_CHANGE_REWIND_SECONDS", "15"))
 
 
 def format_hms(total_seconds):
-    """Saniyeyi SS:DD:SS formatına çevirir."""
     total_seconds = int(total_seconds)
     hrs = total_seconds // 3600
     mins = (total_seconds % 3600) // 60
@@ -51,8 +49,6 @@ def format_hms(total_seconds):
 
 
 def get_local_state():
-    """Yerel state dosyasından son durumu okur
-    (indeks, saniye, o an oynayan linkin URL'si, o an oynayan içeriğin başlığı)."""
     if os.path.exists(STATE_FILE_NAME):
         if os.path.getsize(STATE_FILE_NAME) == 0:
             print(f"⚠️ Yerel state dosyası boş ({STATE_FILE_NAME}), 0'dan başlanıyor.")
@@ -74,8 +70,6 @@ def get_local_state():
 
 
 def update_local_state(index, seconds, url="", title=""):
-    """Son konumu (indeks, saniye), o an oynayan linkin URL'sini ve içerik başlığını
-    yerel state dosyasına kaydeder."""
     try:
         data = {
             "last_index": int(index),
@@ -131,7 +125,6 @@ def download_logo():
 
 
 def write_title_file(title):
-    """Şu an oynayan içeriğin adını, drawtext filtresinin okuyacağı dosyaya yazar."""
     try:
         with open('title.txt', 'w', encoding='utf-8') as f:
             f.write(title)
@@ -206,11 +199,8 @@ def start_m3u_stream():
                 print(f"🔄 Bu sıradaki ({current_index + 1}) içeriğin linki değişmiş, "
                       f"ancak film aynı ('{film_title}'). {old_seconds}s yerine "
                       f"{last_seconds}s'den devam edilecek.")
-                print(f"   Eski link: {last_url}")
-                print(f"   Yeni link: {target_stream_url}")
             else:
-                print(f"🆕 Bu sıradaki ({current_index + 1}) içerik gerçekten değişmiş "
-                      f"('{last_title}' -> '{film_title}'), video baştan başlatılacak.")
+                print(f"🆕 Bu sıradaki ({current_index + 1}) içerik gerçekten değişmiş, baştan başlatılacak.")
                 last_seconds = 0
 
         last_url = target_stream_url
@@ -224,36 +214,49 @@ def start_m3u_stream():
         print(f"⏱️ Başlangıç Saniyesi: {last_seconds}")
         print(f"🚀 Hedef RTMP       : {RTMP_SERVER}")
 
-        # --- ÇEREZ VE OTURUM YAKALAMA ÇÖZÜMÜ ---
+        # --- GELİŞMİŞ ÇEREZ VE OYUNCU SAYFASI YAKALAMA ---
         primary_url = target_stream_url.split(";")[0].strip() if ";" in target_stream_url else target_stream_url
         parsed_url = urlparse(primary_url)
         dynamic_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        
+        # Oynatıcı ana sayfasını bulalım (örn: https://p.playturka.space/videos/eoew6vT/)
+        path_parts = parsed_url.path.split('/')
+        if len(path_parts) > 2:
+            player_page_url = f"{dynamic_domain}/{path_parts[1]}/{path_parts[2]}/"
+        else:
+            player_page_url = f"{dynamic_domain}/"
 
         cookie_str = ""
         try:
             session = requests.Session()
             session.headers.update({
                 'User-Agent': STREAM_USER_AGENT,
-                'Referer': f"{dynamic_domain}/"
+                'Referer': f"{dynamic_domain}/",
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'
             })
-            resp = session.get(primary_url, timeout=10, allow_redirects=True)
+            print(f"🌐 Oynatıcı sayfasına istek atılıyor: {player_page_url}")
+            resp = session.get(player_page_url, timeout=10, allow_redirects=True)
+            print(f"📥 Oynatıcı sayfası HTTP Yanıt Kodu: {resp.status_code}")
+            
             cookies_dict = session.cookies.get_dict()
             if cookies_dict:
                 cookie_str = "; ".join([f"{k}={v}" for k, v in cookies_dict.items()])
-                print(f"🍪 Oturum çerezleri yakalandı: {cookie_str}")
+                print(f"🍪 Yakalanan Çerezler: {cookie_str}")
+            else:
+                print("⚠️ Oynatıcı sayfasından çerez dönmedi.")
         except Exception as e:
-            print(f"⚠️ Çerez yakalama uyarısı: {e}")
+            print(f"⚠️ Çerez/Oturum yakalama hatası: {e}")
 
         headers_arg = (
             f"User-Agent: {STREAM_USER_AGENT}\r\n"
-            f"Referer: {dynamic_domain}/\r\n"
+            f"Referer: {player_page_url}\r\n"
             f"Origin: {dynamic_domain}\r\n"
         )
         if cookie_str:
             headers_arg += f"Cookie: {cookie_str}\r\n"
-        # ----------------------------------------
+        # --------------------------------------------------
 
-        # Gerçek zamanlı okuma (-re) ve kararlı ağ bağlantısı parametreleri
         input_options = [
             '-re',  
             '-headers', headers_arg,
@@ -366,12 +369,11 @@ def start_m3u_stream():
             while proc.poll() is None:
                 time.sleep(5)
                 if time.time() - progress_ref[0] > WATCHDOG_TIMEOUT_SECONDS:
-                    print(f"🚨 Watchdog: {WATCHDOG_TIMEOUT_SECONDS} saniyedir ilerleme yok, "
-                          f"FFmpeg donmuş görünüyor. Süreç zorla sonlandırılıyor.")
+                    print(f"🚨 Watchdog: {WATCHDOG_TIMEOUT_SECONDS} saniyedir ilerleme yok, süreç sonlandırılıyor.")
                     try:
                         proc.kill()
-                    except Exception as e:
-                        print(f"⚠️ Watchdog süreç sonlandırma hatası: {e}")
+                    except:
+                        pass
                     break
 
         watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
@@ -406,7 +408,6 @@ def start_m3u_stream():
 
         if process.returncode == 0:
             print("✅ İçerik bitti, sıradakine geçiliyor.")
-            write_step_summary(film_title, current_index, len(playlist), current_stream_seconds, status="✅ Bitti, sıradakine geçiliyor")
             current_index += 1
             last_seconds = 0
             last_url = ""
@@ -414,10 +415,6 @@ def start_m3u_stream():
             update_local_state(current_index, 0, "", "")
             consecutive_fast_failures = 0
         else:
-            if process.returncode == -6:
-                print("⚠️ FFmpeg SIGABRT (decoder assertion) ile çöktü — bilinen bir FFmpeg iç hatası olabilir.")
-            elif process.returncode == -9:
-                print("⚠️ FFmpeg watchdog tarafından donma nedeniyle sonlandırıldı (muhtemelen RTMP çıkışı tıkandı).")
             print(f"⚠️ Yayın koptu (Return Code: {process.returncode}). Aynı saniyeden tekrar denenecek.")
             if stderr_tail:
                 print("🧾 FFmpeg son log satırları:")
@@ -432,7 +429,7 @@ def start_m3u_stream():
                 consecutive_fast_failures = 0
 
             if consecutive_fast_failures >= 3:
-                print(f"❌ {film_title} akışı sürekli dekoder hatası verdi. Sonraki içeriğe geçiliyor...")
+                print(f"❌ {film_title} akışı sürekli hata verdi. Sonraki içeriğe geçiliyor...")
                 current_index += 1
                 last_seconds = 0
                 last_url = ""
@@ -444,11 +441,7 @@ def start_m3u_stream():
                 last_url = target_stream_url
                 update_local_state(current_index, last_seconds, last_url, film_title)
 
-        if consecutive_fast_failures > 0:
-            retry_delay = min(5 * (2 ** consecutive_fast_failures), MAX_RETRY_DELAY_SECONDS)
-        else:
-            retry_delay = 5
-
+        retry_delay = min(5 * (2 ** consecutive_fast_failures), MAX_RETRY_DELAY_SECONDS) if consecutive_fast_failures > 0 else 5
         print(f"⚠️ {retry_delay} saniye sonra tekrar bağlanılıyor...")
         time.sleep(retry_delay)
 
