@@ -13,11 +13,11 @@ from collections import deque
 from urllib.parse import urlparse
 
 # ===================== AYARLAR =====================
-RTMP_URL = "rtmp://ssh101.bozztv.com:1935/ssh101"
-STREAM_KEY = os.getenv("STREAM_KEY") or "0212tv"
+RTMP_URL = "rtmp://live.restream.io/live"
+STREAM_KEY = os.getenv("STREAM_KEY") or "re_12664026_event6de02ff24ec3466db88dee7aeb633142"
 RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
-M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/deneme1.m3u"
+M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/deneme.m3u"
 LOGO_URL = os.getenv("LOGO_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/1790197529120.png"
 
 STATE_FILE_NAME = os.getenv("STATE_FILE_NAME", "yesilcam.json")
