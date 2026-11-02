@@ -13,8 +13,8 @@ from collections import deque
 from urllib.parse import urlparse
 
 # ===================== AYARLAR =====================
-RTMP_URL = "rtmp://live.restream.io/live"
-STREAM_KEY = os.getenv("STREAM_KEY") or "re_12664026_event6de02ff24ec3466db88dee7aeb633142"
+RTMP_URL = "rtmp://stream.livepush.io/live/"
+STREAM_KEY = os.getenv("STREAM_KEY") or "rtmp_cf0870b77ed34ad08869f3a594c2aa06"
 RTMP_SERVER = f"{RTMP_URL}/{STREAM_KEY}"
 
 M3U_URL = os.getenv("M3U_URL") or "https://raw.githubusercontent.com/ino8090/0101/refs/heads/main/deneme.m3u"
